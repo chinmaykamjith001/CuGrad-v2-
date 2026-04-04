@@ -6,15 +6,24 @@
 #include <algorithm> // For sorting/unique if you really want Set behavior
 #include <cmath>
 
-class Tensor{
+class Tensor : public std::enable_shared_from_this<Tensor> {
 public:
     std::vector<double>data;
     std::vector<int>shape;
     std::vector<int>strides;
+    std::vector<double>grad;
 
-    Tensor(std::vector<double> input_data, std::vector<int> input_shape){
+    std::vector<std::shared_ptr<Tensor>> _prev;
+    std::function<void()> _backward;
+
+    Tensor(std::vector<double> input_data, std::vector<int> input_shape, std::vector<std::shared_ptr<Tensor>> children ={}){
         data = input_data;
         shape = input_shape;
+
+        grad = std::vector<double>(data.size(), 0.0);
+
+        _prev = children;
+        _backward = [](){};
 
         strides = {shape[1], 1};
     }
@@ -24,6 +33,76 @@ public:
         return data[flat];
     }
 };
+
+std::shared_ptr<Tensor> operator+(std::shared_ptr<Tensor> A, std::shared_ptr<Tensor> B){
+    if(A->shape[0] != B->shape[0] || A->shape[1] != B->shape[1]){
+        throw std::runtime_error("Shape mismatch!");
+    }
+
+    std::vector<double> out_data(A->data.size());
+
+    for(int i = 0; i < A->data.size(); i++){
+        out_data[i] = A->data[i] + B->data[i];
+    }
+
+    auto out = std::make_shared<Tensor>(out_data, A->shape, std::vector<std::shared_ptr<Tensor>>{A, B});
+
+    out->_backward = [A, B, out](){
+        for(int i = 0; i < out->grad.size(); i++){
+            A->grad[i] += out->grad[i];
+            B->grad[i] += out->grad[i];
+        }
+    };
+
+    return out;
+}
+
+std::shared_ptr<Tensor> matmul(std::shared_ptr<Tensor> A, std::shared_ptr<Tensor> B){
+    if (A->shape[1] != B->shape[0]){
+        throw std::runtime_error("Not matching!");
+    }
+
+    int M = A->shape[0]; //rows of A
+    int K = A->shape[1]; //same as rows of B
+    int N = B->shape[1]; //cols of B
+
+    std::vector<double> out_data(M*N, 0.0);
+    std::vector<int> out_shape{M, N};
+
+    for(int i = 0; i < M; i++){
+        for(int j = 0; j < N; j++){
+            double sum = 0.0;
+            for(int k = 0; k < K; k++){
+                sum += A->data[i*A->strides[0] + k * A->strides[1]] * B->data[k * B->strides[0] + j * B->strides[1]];
+            }
+            out_data[i * N + j] = sum;
+        }
+    }
+
+    auto out = std::make_shared<Tensor>(out_data, out_shape, std::vector<std::shared_ptr<Tensor>>{A, B});
+
+    out->_backward = [A,B,out,M,N,K](){
+        for(int i = 0; i < M; i++){
+            for(int k = 0; k < K; k++){
+                double sum = 0.0;
+                for(int j = 0; j < N; j++){
+                    sum += out->grad[i * N + j] * B->data[k * N + j];
+                }
+                A->grad[i * K + k] += sum;
+            }
+        }
+        for(int i = 0; i < M; i++){
+            for(int k = 0; k < K; k++){
+                double sum = 0.0;
+                for(int j = 0; j < N; j++){
+                    sum += out->grad[i * N + j] * A->data[k * N + j];
+                }
+                B->grad[i * K + k] += sum;
+            }
+        }
+    return out;
+    };
+}
     // The Engine: Topological Sort + Backprop
     void backward() {
         // 1. Prepare the lists
