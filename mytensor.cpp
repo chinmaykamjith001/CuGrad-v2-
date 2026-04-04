@@ -6,24 +6,24 @@
 #include <algorithm> // For sorting/unique if you really want Set behavior
 #include <cmath>
 
-class Value : public std::enable_shared_from_this<Value> {
+class Tensor{
 public:
-    double data;
-    double grad;
-    std::function<void()> _backward;
-    std::vector<std::shared_ptr<Value>> _prev;
-    std::string _op;
-    std::string label;
-    
-    Value(double val, std::vector<std::shared_ptr<Value>> children = {}, std::string op = "", std::string lbl = ""){
-        data = val;
-        grad = 0;
-        _backward = [](){};
-        _prev = children;
-        _op = op;
-        label = lbl;
+    std::vector<double>data;
+    std::vector<int>shape;
+    std::vector<int>strides;
+
+    Tensor(std::vector<double> input_data, std::vector<int> input_shape){
+        data = input_data;
+        shape = input_shape;
+
+        strides = {shape[1], 1};
     }
 
+    double get_value(int row, int col){
+        int flat = row * strides[0] + col * strides[1];
+        return data[flat];
+    }
+};
     // The Engine: Topological Sort + Backprop
     void backward() {
         // 1. Prepare the lists
