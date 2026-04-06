@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <random>
+#include <chrono>
 
 // ---------------------------------------------------------
 // BROADCAST AND SHAPE UTILITIES
@@ -405,12 +406,14 @@ public:
 // ---------------------------------------------------------
 
 int main() {
+
+    auto start = std::chrono::high_resolution_clock::now();
     // Input: shape [4, 3] (batch size 4, features 3)
     std::vector<double> xs_data = {
         2.0, 3.0, -1.0,
         3.0, 1.0, 0.5,
         0.5, 1.0, 1.0,
-        1.0, 1.0, 1.0
+        1.0, 1.0, 50000000000000000000000000000000000000000000000000000000000000000000000000000000000000000.0,
     };
     auto x = std::make_shared<Tensor>(xs_data, std::vector<int>{4, 3});
 
@@ -448,12 +451,18 @@ int main() {
         }
     }
 
+    auto end = std::chrono::high_resolution_clock::now();
+
     // Final demonstration of the forward pass outputs
     std::cout << "Predictions after training:" << std::endl;
     auto ypred = model(x);
     for (int i = 0; i < 4; ++i) {
         std::cout << "Pred: " << ypred->data[i] << " | Expected: " << ys_data[i] << std::endl;
     }
+    std::chrono::duration<double> elapsed = end - start;
+
+    std::cout << "Elapsed time: " << elapsed.count() << " seconds." << std::endl;
+    
 
     return 0;
 }
