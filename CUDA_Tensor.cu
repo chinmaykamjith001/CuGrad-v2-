@@ -134,56 +134,72 @@ std::shared_ptr<Tensor> sum(std::shared_ptr<Tensor> self) {
         }
     };
     return out;
+}
+
+__global__ void addForwardKernel(const double* A, const double* B, double* out, int a_rows, int a_cols, int b_rows, int b_cols, int out_rows, int out_cols, int n){
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = gridDim.x * blockDim.x;
+
+    for(int i = index; i < n; i+=stride){
+        int r = i / out_cols; 
+        int c = i % out_cols;
+
+        int r_A = (a_rows == 1) ? 0 : r;
+        int r_B = (b_rows == 1) ? 0 : r;
+
+        int idx_A = r_A * a_cols + c;
+        int idx_B = r_B * b_cols + c;
+
+        out[i] = A[idx_A] + B[idx_B];
+
     }
+}
+
+__global__ void addBackwardKernel(double* A_grad, double* B_grad, const double* out_grad, int a_rows, int a_cols, int b_rows, int b_cols, int out_rows, int out_cols, int n){
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = gridDim.x * blockDim.x;
+
+    for(int i = index; i < n; i+=stride){
+        int r = i / out_cols; 
+        int c = i % out_cols;
+
+        int r_A = (a_rows == 1) ? 0 : r;
+        int r_B = (b_rows == 1) ? 0 : r;
+
+        int idx_A = r_A * a_cols + c;
+        int idx_B = r_B * b_cols + c;
+
+        atomicAdd(&A_grad[idx_A], out_grad[i]);
+        atomicAdd(&B_grad[idx_B], out_grad[i]);
+    }
+}
 
 std::shared_ptr<Tensor> operator+(std::shared_ptr<Tensor> A, std::shared_ptr<Tensor> B){
     // Determine the broadcasted output shape
     int max_rows = std::max(A->shape[0], B->shape[0]);
     int max_cols = std::max(A->shape[1], B->shape[1]);
-    
+
     // Safety check: ensure columns match, and rows match or one is a singleton (1)
     if (A->shape[1] != B->shape[1] || 
        (A->shape[0] != B->shape[0] && A->shape[0] != 1 && B->shape[0] != 1)) {
         throw std::runtime_error("Shape mismatch in operator+!");
     }
 
-    std::vector<int> out_shape = {max_rows, max_cols};
-    std::vector<double> out_data(max_rows * max_cols);
+    auto out = std::make_shared<Tensor>(std::vector<int>{max_rows, max_cols}, std::vector<std::shared_ptr<Tensor>>{A, B});
+
+    int size = out->total_elements;
+
+    int blocksize = 256;
+    int numblocks = (size + blocksize -1) / blocksize;
 
     // Forward pass with 2D broadcasting
-    for (int r = 0; r < max_rows; ++r) {
-        for (int c = 0; c < max_cols; ++c) {
-            // If a tensor only has 1 row, stay at row 0 (broadcast it!)
-            int r_A = (A->shape[0] == 1) ? 0 : r;
-            int r_B = (B->shape[0] == 1) ? 0 : r;
-            
-            int idx_out = r * max_cols + c;
-            int idx_A = r_A * A->shape[1] + c;
-            int idx_B = r_B * B->shape[1] + c;
-            
-            out_data[idx_out] = A->data[idx_A] + B->data[idx_B];
-        }
-    }
-
-    auto out = std::make_shared<Tensor>(out_data, out_shape, std::vector<std::shared_ptr<Tensor>>{A, B});
+    addForwardKernel<<<numblocks, blocksize>>>(A->data, B->data, out->data, A->shape[0], A->shape[1], B->shape[0], B->shape[1], out->shape[0], out->shape[1], size);
+    cudaDeviceSynchronize();
 
     // Backward pass with Unbroadcasting accumulator
-    out->_backward = [A, B, out, max_rows, max_cols](){
-        for (int r = 0; r < max_rows; ++r) {
-            for (int c = 0; c < max_cols; ++c) {
-                int idx_out = r * max_cols + c;
-                
-                int r_A = (A->shape[0] == 1) ? 0 : r;
-                int r_B = (B->shape[0] == 1) ? 0 : r;
-                
-                int idx_A = r_A * A->shape[1] + c;
-                int idx_B = r_B * B->shape[1] + c;
-                
-                // Accumulate gradients back
-                A->grad[idx_A] += out->grad[idx_out];
-                B->grad[idx_B] += out->grad[idx_out];
-            }
-        }
+    out->_backward = [A, B, out, size, numblocks, blocksize](){
+        addBackwardKernel<<<numblocks, blocksize>>>(A->grad, B->grad, out->grad, A->shape[0], A->shape[1], B->shape[0], B->shape[1], out->shape[0], out->shape[1], size);
+        cudaDeviceSynchronize();
     };
 
     return out;
@@ -202,7 +218,7 @@ __global__ void subBackwardKernel(const double* out_grad, double* A_grad, double
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = blockDim.x * gridDim.x;
 
-    for(int i = index; i < n, i += stride){
+    for(int i = index; i < n; i += stride){
         A_grad[i] += out_grad[i];
         B_grad[i] += -1.0 * out_grad[i];
     }
@@ -219,143 +235,251 @@ std::shared_ptr<Tensor> operator-(std::shared_ptr<Tensor> A, std::shared_ptr<Ten
     int blockSize = 256;
     int blockNum = (size + blockSize -1) / blockSize;
 
-    subForwardKernel<<<numBlocks, blockSize>>>(A->data, B->data, out->data, size);
+    subForwardKernel<<<blockNum, blockSize>>>(A->data, B->data, out->data, size);
 
-    cudaDeviceSynchronize();
-
-
-    auto out = std::make_shared<Tensor>(out_data, A->shape, std::vector<std::shared_ptr<Tensor>>{A, B});
+    cudaDeviceSynchronize();    
 
     out->_backward = [A, B, out, size, blockSize, blockNum](){
-        subBackwardKernel<<<numBlocks, blockSize>>>(out->grad, A->grad, B->grad, size);
-
+        subBackwardKernel<<<blockNum, blockSize>>>(out->grad, A->grad, B->grad, size);
         cudaDeviceSynchronize();
     };
 
     return out;
 }
 
+__global__ void mulForwardKernel(const double* A, const double* B, double* out, int n){
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = gridDim.x * blockDim.x;
+
+    for(int i = index; i < n; i += stride){
+        out[i] = A[i] * B[i];
+    }
+}
+
+__global__ void mulBackwardKernel(const double* out_grad, const double* A_data, const double* B_data, double* A_grad, double* B_grad, int n){
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = gridDim.x * blockDim.x;
+
+    for(int i = index; i < n; i+= stride){
+        A_grad[i] += out_grad[i] * B_data[i];
+        B_grad[i] += out_grad[i] * A_data[i];
+    }
+}
 std::shared_ptr<Tensor> operator*(std::shared_ptr<Tensor> A, std::shared_ptr<Tensor> B){
     if(A->shape[0] != B->shape[0] || A->shape[1] != B->shape[1]){
         throw std::runtime_error("Not right size!");
     }
 
+    auto out = std::make_shared<Tensor>(A->shape, std::vector<std::shared_ptr<Tensor>>{A, B});
+    int size = out->total_elements;
+
+    int blocksize = 256;
+    int numblocks = (size + blocksize - 1) / blocksize;
+
     //forward
-    std::vector<double> out_data(A->data.size());
-    for(size_t i = 0; i < A->data.size(); i++){
-        out_data[i] = A->data[i] * B->data[i];
-    }
+    mulForwardKernel<<<numblocks, blocksize>>>(A->data, B->data, out->data, size);
+    cudaDeviceSynchronize();
 
     //backward
-    auto out = std::make_shared<Tensor>(out_data, A->shape, std::vector<std::shared_ptr<Tensor>>{A, B});
-
-    out->_backward = [A, B, out](){
-        for(int i = 0; i < A->data.size(); i++){
-            A->grad[i] += out->grad[i] * B->data[i]; 
-            B->grad[i] += out->grad[i] * A->data[i];
-        }
+    out->_backward = [A, B, out, size, blocksize, numblocks](){
+        mulBackwardKernel<<<numblocks, blocksize>>>(out->grad, A->data, B->data, A->grad, B->grad, size);
+        cudaDeviceSynchronize();
     };
 
     return out;
+}
+
+__global__ void divForwardKernel(const double* A, const double* B, double* out, int n){
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = gridDim.x * blockDim.x;
+
+    for(int i = index; i < n; i += stride){
+        out[i] = A[i] * (1.0/B[i]);
+    }
+}
+
+__global__ void divBackwardKernel(const double* out_grad, double* a_grad, double* b_grad, const double* a_data, const double* b_data, int n){
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = gridDim.x * blockDim.x;
+
+    for(int i = index; i < n; i += stride){
+        a_grad[i] += out_grad[i] * (1.0/b_data[i]);
+        b_grad[i] += out_grad[i] * ((-a_data[i]) / ((b_data[i] * b_data[i])));
+    }
 }
 
 std::shared_ptr<Tensor> operator/(std::shared_ptr<Tensor> A, std::shared_ptr<Tensor> B ){
     if(A->shape[0] != B->shape[0] || A->shape[1] != B->shape[1]){
         throw std::runtime_error("Not right size!");
     }
+    auto out = std::make_shared<Tensor>(A->shape, std::vector<std::shared_ptr<Tensor>>{A, B});
+    int size = out->total_elements;
+
+    int blocksize = 256;
+    int numblocks = (size + blocksize - 1) / blocksize;
 
     //forward
-    std::vector<double> out_data(A->data.size());
-    for(int i = 0; i < A->data.size(); i++){
-        out_data[i] = A->data[i] * (1/B->data[i]);
-    }
+    divForwardKernel<<<numblocks, blocksize>>>(A->data, B->data, out->data, size);
+    cudaDeviceSynchronize();
+    
 
     //backward
-    auto out = std::make_shared<Tensor>(out_data, A->shape, std::vector<std::shared_ptr<Tensor>>{A, B});
 
-    out->_backward = [A, B, out](){
-        for(int i = 0; i < A->data.size(); i++){
-            double a = A->data[i];
-            double b = B->data[i];
-            
-            // A's blame: out_grad * (1/b)
-            A->grad[i] += out->grad[i] * (1.0 / b);
-            
-            // B's blame: out_grad * (-a / b^2)
-            B->grad[i] += out->grad[i] * (-a / (b * b));
-        }
+    out->_backward = [A, B, out, size, numblocks, blocksize](){
+        divBackwardKernel<<<numblocks, blocksize>>>(out->grad, A->grad, B->grad, A->data, B->data, size);
+        cudaDeviceSynchronize();
     };
 
     return out;
-
 }
 
 
-std::shared_ptr<Tensor> matmul(std::shared_ptr<Tensor> A, std::shared_ptr<Tensor> B){
-    if (A->shape[1] != B->shape[0]){
-        throw std::runtime_error("Not matching!");
+/////////////////////////////////////
+// GPU Workhorses (2D Kernels)
+/////////////////////////////////////
+
+// 1. FORWARD KERNEL: Maps a 2D grid to compute individual dot products
+__global__ void matmulForwardKernel(const double* A, const double* B, double* out, 
+                                    int M, int N, int K, 
+                                    int A_s0, int A_s1, int B_s0, int B_s1) {
+    // Determine the unique 2D coordinate for this specific thread
+    int col = blockIdx.x * blockDim.x + threadIdx.x; // Maps to Columns (N)
+    int row = blockIdx.y * blockDim.y + threadIdx.y; // Maps to Rows (M)
+
+    // Hardware Boundary Guard: Blocks are 16x16. If your matrix size isn't a 
+    // perfect multiple of 16, threads on the outer edge must sit out idle!
+    if (row < M && col < N) {
+        double sum = 0.0;
+        // Accumulate the dot product along the shared internal dimension K
+        for (int k = 0; k < K; ++k) {
+            sum += A[row * A_s0 + k * A_s1] * B[k * B_s0 + col * B_s1];
+        }
+        // Write the finished dot product to the flat output index
+        out[row * N + col] = sum;
+    }
+}
+
+// 2. BACKWARD KERNEL A: Computes A_grad = out_grad x B^T (Dimensions: M x K)
+__global__ void matmulBackwardAKernel(const double* out_grad, const double* B, double* A_grad, 
+                                      int M, int N, int K, int B_s0, int B_s1) {
+    int k_idx = blockIdx.x * blockDim.x + threadIdx.x; // Maps to K
+    int row = blockIdx.y * blockDim.y + threadIdx.y;   // Maps to M
+
+    if (row < M && k_idx < K) {
+        double sum = 0.0;
+        for (int col = 0; col < N; ++col) {
+            // Strides are inverted to virtually evaluate B-Transposed
+            sum += out_grad[row * N + col] * B[k_idx * B_s0 + col * B_s1];
+        }
+        atomicAdd(&A_grad[row * K + k_idx], sum);
+    }
+}
+
+// 3. BACKWARD KERNEL B: Computes B_grad = A^T x out_grad (Dimensions: K x N)
+__global__ void matmulBackwardBKernel(const double* out_grad, const double* A, double* B_grad, 
+                                      int M, int N, int K, int A_s0, int A_s1) {
+    int col = blockIdx.x * blockDim.x + threadIdx.x;   // Maps to N
+    int k_idx = blockIdx.y * blockDim.y + threadIdx.y; // Maps to K
+
+    if (k_idx < K && col < N) {
+        double sum = 0.0;
+        for (int row = 0; row < M; ++row) {
+            // Strides are inverted to virtually evaluate A-Transposed
+            sum += A[row * A_s0 + k_idx * A_s1] * out_grad[row * N + col];
+        }
+        atomicAdd(&B_grad[k_idx * N + col], sum);
+    }
+}
+
+/////////////////////////////////////
+// C++ Operator Wrapper
+/////////////////////////////////////
+std::shared_ptr<Tensor> matmul(std::shared_ptr<Tensor> A, std::shared_ptr<Tensor> B) {
+    // 1. Matrix Shape Compatibility Verification
+    if (A->shape[1] != B->shape[0]) {
+        throw std::runtime_error("Matrix dimensions mismatch for matmul!");
     }
 
-    int M = A->shape[0]; //rows of A
-    int K = A->shape[1]; //same as rows of B
-    int N = B->shape[1]; //cols of B
+    int M = A->shape[0]; // Rows of A
+    int K = A->shape[1]; // Inner dimension (Cols of A / Rows of B)
+    int N = B->shape[1]; // Columns of B
 
-    std::vector<double> out_data(M*N, 0.0);
     std::vector<int> out_shape{M, N};
+    auto out = std::make_shared<Tensor>(out_shape, std::vector<std::shared_ptr<Tensor>>{A, B});
 
-    for(int i = 0; i < M; i++){
-        for(int j = 0; j < N; j++){
-            double sum = 0.0;
-            for(int k = 0; k < K; k++){
-                sum += A->data[i*A->strides[0] + k * A->strides[1]] * B->data[k * B->strides[0] + j * B->strides[1]];
-            }
-            out_data[i * N + j] = sum;
-        }
-    }
+    // 2. Configure the 2D Spatial Hardware Layout
+    // We create square blocks of 16x16 threads (256 threads total per block)
+    dim3 threadsPerBlock(16, 16);
 
-    auto out = std::make_shared<Tensor>(out_data, out_shape, std::vector<std::shared_ptr<Tensor>>{A, B});
+    // Calculate how many blocks are needed to cover the output's 2D grid dimensions
+    dim3 numBlocksForward((N + threadsPerBlock.x - 1) / threadsPerBlock.x, 
+                          (M + threadsPerBlock.y - 1) / threadsPerBlock.y);
 
-    out->_backward = [A,B,out,M,N,K](){
-        for(int i = 0; i < M; i++){
-            for(int k = 0; k < K; k++){
-                double sum = 0.0;
-                for(int j = 0; j < N; j++){
-                    sum += out->grad[i * N + j] * B->data[k * N + j];
-                }
-                A->grad[i * K + k] += sum;
-            }
-        }
-        for(int i = 0; i < K; i++){
-            for(int k = 0; k < N; k++){
-                double sum = 0.0;
-                for(int j = 0; j < M; j++){
-                    sum += out->grad[j*N + k] * A->data[j*K+i];
-                }
-                B->grad[i * N + k] += sum;
-            }
-        }
-    
+    // 3. Launch 2D Forward Kernel
+    matmulForwardKernel<<<numBlocksForward, threadsPerBlock>>>(
+        A->data, B->data, out->data, M, N, K,
+        A->strides[0], A->strides[1], B->strides[0], B->strides[1]
+    );
+    cudaDeviceSynchronize();
+
+    // 4. Register the 2D Backpropagation Graph Closure
+    out->_backward = [A, B, out, M, N, K, threadsPerBlock]() {
+        // A_grad matches A's dimensions (M x K)
+        dim3 numBlocksA((K + threadsPerBlock.x - 1) / threadsPerBlock.x, 
+                        (M + threadsPerBlock.y - 1) / threadsPerBlock.y);
+
+        // B_grad matches B's dimensions (K x N)
+        dim3 numBlocksB((N + threadsPerBlock.x - 1) / threadsPerBlock.x, 
+                        (K + threadsPerBlock.y - 1) / threadsPerBlock.y);
+
+        // Fire both gradient calculations in parallel execution lanes
+        matmulBackwardAKernel<<<numBlocksA, threadsPerBlock>>>(
+            out->grad, B->data, A->grad, M, N, K, B->strides[0], B->strides[1]
+        );
+        matmulBackwardBKernel<<<numBlocksB, threadsPerBlock>>>(
+            out->grad, A->data, B->grad, M, N, K, A->strides[0], A->strides[1]
+        );
+        cudaDeviceSynchronize();
     };
+
     return out;
 }
 
 /////////////////////////////////////
 //Non-Linearity
 /////////////////////////////////////
-std::shared_ptr<Tensor> relu(std::shared_ptr<Tensor> A){
-    std::vector<double> out_data(A->data.size());
+__global__ void reluForwardKernel(const double* A, double* out, int n){
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = gridDim.x * blockDim.x;
 
-    for(int i = 0; i < A->data.size(); i++){
-        out_data[i] = (A->data[i] > 0) ? A->data[i] : 0.0; 
+    for(int i = index; i < n; i += stride){
+        out[i] = (A[i] > 0) ? A[i] : 0.0;
     }
+}
 
-    auto out = std::make_shared<Tensor>(out_data, A->shape, std::vector<std::shared_ptr<Tensor>>{A});
+__global__ void reluBackwardKernel(double* A_grad, const double* A_data, const double* out_grad, int n){
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = gridDim.x * blockDim.x;
 
-    out->_backward = [A, out](){
-        for(int i = 0; i < A->data.size(); i++){
-            double derivative = (A->data[i] > 0) ? 1.0 : 0.0;
-            A->grad[i] += derivative * out->grad[i];
-        }
+    for(int i = index; i < n; i += stride){
+        double derivative = (A_data[i] > 0) ? 1.0 : 0.0;
+        A_grad[i] += derivative * out_grad[i];
+    }    
+}
+
+std::shared_ptr<Tensor> relu(std::shared_ptr<Tensor> A){
+
+    auto out = std::make_shared<Tensor>(A->shape, std::vector<std::shared_ptr<Tensor>>{A});
+    int size = out->total_elements;
+    int blocksize = 256;
+    int numblocks = (size + blocksize - 1) / blocksize;
+
+    reluForwardKernel<<<numblocks, blocksize>>>(A->data, out->data, size);
+    cudaDeviceSynchronize();
+
+    out->_backward = [A, out, size, numblocks, blocksize](){
+        reluBackwardKernel<<<numblocks, blocksize>>>(A->grad, A->data, out->grad, size);
+        cudaDeviceSynchronize();
     };
 
     return out;
