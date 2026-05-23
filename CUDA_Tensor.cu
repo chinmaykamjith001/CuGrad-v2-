@@ -659,7 +659,7 @@ int main() {
         loss->backward();
 
         // 4. UPDATE (Gradient Descent - Now fully GPU parallelized!)
-        double learning_rate = 0.005; 
+        double learning_rate = 0.01; 
         for (auto p : model.parameters()) {
             sgd_update(p, learning_rate);
         }
