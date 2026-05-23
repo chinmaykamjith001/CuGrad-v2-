@@ -121,15 +121,15 @@ public:
 
 std::shared_ptr<Tensor> sum(std::shared_ptr<Tensor> self) {
     double total = 0;
-    for (double d : self->data) total += d;
+    for (int i = 0; i < self->total_elements; i++) {
+        total += self->data[i];
+    }
     
     // Output is always a 1x1 shape
     auto out = std::make_shared<Tensor>(std::vector<double>{total}, std::vector<int>{1}, std::vector<std::shared_ptr<Tensor>>{self});
     
     out->_backward = [self, out]() {
-        for (int i = 0; i < self->grad.size(); i++) {
-            // The derivative is 1.0, so we just pass the 
-            // incoming gradient (out->grad[0]) straight back.
+        for (int i = 0; i < self->total_elements; i++) {
             self->grad[i] += 1.0 * out->grad[0];
         }
     };
@@ -590,10 +590,43 @@ public:
 ///////////////////////////////////
 //Main loop
 ///////////////////////////////////
+/////////////////////////////////////
+// GPU Workhorses (Optimization Kernel)
+/////////////////////////////////////
 
+/////////////////////////////////////
+// GPU Workhorses (Optimization Kernel)
+/////////////////////////////////////
+
+// 1. SGD UPDATE KERNEL: Performs weight = weight - (lr * gradient) in parallel
+__global__ void sgdUpdateKernel(double* data, const double* grad, double lr, int n) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = gridDim.x * blockDim.x;
+
+    for (int i = index; i < n; i += stride) {
+        data[i] -= lr * grad[i];
+    }
+}
+
+// 2. C++ Host Wrapper Function
+void sgd_update(std::shared_ptr<Tensor> p, double lr) {
+    int size = p->total_elements;
+    int blockSize = 256;
+    int blockNum = (size + blockSize - 1) / blockSize;
+
+    // Launch the hardware update loop
+    sgdUpdateKernel<<<blockNum, blockSize>>>(p->data, p->grad, lr, size);
+    
+    // Sync to make sure weights are completely updated before the next epoch starts
+    cudaDeviceSynchronize();
+}
+
+/////////////////////////////////////
+// Main Loop
+/////////////////////////////////////
 int main() {
-
     auto start = std::chrono::high_resolution_clock::now();
+    
     // Input: shape [4, 3] (batch size 4, features 3)
     std::vector<double> xs_data = {
         2.0, 3.0, -1.0,
@@ -609,7 +642,7 @@ int main() {
 
     MLP model(3, {128, 64, 32, 16, 8, 4, 1});
 
-    for (int k = 0; k < 500; ++k) { // Tensor operations converge very efficiently or may require different epochs
+    for (int k = 0; k < 500; ++k) { 
         
         // 1. FORWARD PASS
         auto ypred = model(x);
@@ -620,16 +653,15 @@ int main() {
 
         // 3. BACKWARD PASS (Reset Gradients + Backprop)
         for (auto p : model.parameters()) {
-            std::fill(p->grad.begin(), p->grad.end(), 0.0);
+            // FIXED: Replaced vector iterators with raw pointer arithmetic bounds
+            std::fill(p->grad, p->grad + p->total_elements, 0.0);
         }
         loss->backward();
 
-        // 4. UPDATE (Gradient Descent)
+        // 4. UPDATE (Gradient Descent - Now fully GPU parallelized!)
         double learning_rate = 0.005; 
         for (auto p : model.parameters()) {
-            for (size_t i = 0; i < p->data.size(); ++i) {
-                p->data[i] -= learning_rate * p->grad[i];
-            }
+            sgd_update(p, learning_rate);
         }
 
         if (k % 50 == 0) {
@@ -645,10 +677,9 @@ int main() {
     for (int i = 0; i < 4; ++i) {
         std::cout << "Pred: " << ypred->data[i] << " | Expected: " << ys_data[i] << std::endl;
     }
-    std::chrono::duration<double> elapsed = end - start;
-
-    std::cout << "Elapsed time: " << elapsed.count() << " seconds." << std::endl;
     
+    std::chrono::duration<double> elapsed = end - start;
+    std::cout << "Elapsed time: " << elapsed.count() << " seconds." << std::endl;
 
     return 0;
 }
