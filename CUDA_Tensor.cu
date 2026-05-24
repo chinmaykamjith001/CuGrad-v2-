@@ -629,10 +629,10 @@ int main() {
     
     // Input: shape [4, 3] (batch size 4, features 3)
     std::vector<double> xs_data = {
-        2.0, 3.0, -1.0,
-        3.0, 1.0, 0.5,
-        0.5, 1.0, 1.0,
-        1.0, 1.0, 5.0,
+        4.0, 5.0, -2.0,
+        2.0, 4.0, 3.5,
+        2.5, 3.0, 4.0,
+        5.0, 2.0, 4.0,
     };
     auto x = std::make_shared<Tensor>(xs_data, std::vector<int>{4, 3});
 
