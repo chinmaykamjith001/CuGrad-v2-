@@ -67,7 +67,27 @@ more slowly toward ~190–197× as batch size approaches the full dataset size. 
 is the product of two independent trends compounding: CPU time going up, GPU time
 going down.
 
-## 5. Speedup curve
+## 5. Comparison Against PyTorch
+
+While the previous sections evaluate CuGrad relative to its own CPU implementation, it is also useful to compare against an established deep learning framework.
+
+To provide this context, the same network architecture, dataset, optimizer, epoch count, and batch-size sweep were implemented in PyTorch and executed on the same NVIDIA T4 GPU. Although the underlying CUDA kernels and implementation details differ substantially, this comparison gives a practical reference point for where CuGrad currently stands relative to a production-grade framework.
+
+<img width="1600" height="1000" alt="Code_Generated_Image(2)" src="https://github.com/user-attachments/assets/6b0272aa-ee5f-4418-9e52-eb6da01571cd" />
+
+PyTorch exhibits the expected behavior of a mature CUDA backend. Execution time decreases rapidly as batch size increases, before flattening once kernel launch overhead becomes negligible and computation becomes throughput-limited. The curve closely follows the qualitative behavior observed for CuGrad, suggesting that both implementations are governed by the same underlying GPU execution characteristics.
+
+<img width="1600" height="1000" alt="Code_Generated_Image(1)" src="https://github.com/user-attachments/assets/494d4725-eae7-4a23-8570-40f22aee565c" />
+
+The direct comparison shows that PyTorch consistently outperforms CuGrad across the entire batch-size range. This is expected, as PyTorch benefits from years of engineering effort, highly optimized CUDA kernels, kernel fusion, memory pooling, asynchronous execution, and vendor-tuned libraries such as cuBLAS and cuDNN.
+
+By contrast, CuGrad intentionally uses straightforward CUDA implementations of tensor operations to emphasize correctness, transparency, and educational value rather than peak hardware utilization.
+
+<img width="1600" height="1000" alt="Code_Generated_Image" src="https://github.com/user-attachments/assets/801b44b5-8d4f-42ca-b2c0-4647922e71ce" />
+
+Viewing both implementations on logarithmic axes highlights that they exhibit nearly identical scaling behavior despite differing absolute performance. Both curves decrease rapidly at small batch sizes before approaching a plateau at larger batches, indicating that CuGrad captures the same fundamental GPU scaling trend as PyTorch even though its constant-factor overhead remains larger.
+
+Overall, these results demonstrate that CuGrad behaves similarly to modern GPU frameworks while leaving substantial room for future optimization. Potential improvements include tiled matrix multiplication, kernel fusion, CUDA streams, optimized memory allocation, shared-memory caching, and integration with vendor-optimized libraries.
 
 ## 6. Loss vs. batch size — and why it's *not* a hardware effect
 
