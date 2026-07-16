@@ -5,7 +5,8 @@ GPU tensor operations, and multilayer perceptrons, with no external ML
 libraries. Every operator, from tensor broadcasting to SGD, is backed by a
 hand-written CUDA kernel.
 
-**[INSERT: 3_cpu_vs_gpu.png]**
+<img width="1275" height="825" alt="3_cpu_vs_gpu" src="https://github.com/user-attachments/assets/8a144e2d-4a76-4bbb-8dda-a1f4db948376" />
+
 
 ## Highlights
 
@@ -77,7 +78,8 @@ Trained a 512→256→64→1 MLP on a synthetic binary classification task acros
 batch sizes from 64 to 50,000. GPU training was 13×–197× faster than the CPU
 baseline depending on batch size (144× at batch size 4096).
 
-**[INSERT: 4_speedup.png]**
+<img width="1200" height="825" alt="4_speedup" src="https://github.com/user-attachments/assets/d8ae2bb4-9e11-456e-8bb9-dd9d78df3e3f" />
+
 
 Full methodology, all benchmark graphs, and discussion of limitations
 (including a step-count confound in the loss-vs-batch-size results) are in
@@ -89,6 +91,4 @@ Ongoing solo project, started September 2025. Currently supports dense
 feedforward networks trained with plain SGD; no convolutional layers,
 adaptive optimizers, or multi-GPU support yet.
 
-## License
 
-<!-- INSERT: license, e.g. MIT -->
