@@ -55,23 +55,6 @@ engine only calls `cudaDeviceSynchronize()` where the **host** needs to read
 a value (e.g., computing `mean()`/`sum()` for the loss, or after training
 completes for timing).
 
-## Build & run
-
-Requires the CUDA toolkit (for the GPU version) and a CUDA-capable GPU.
-
-```bash
-# GPU version
-nvcc -DMAIN_ACTIVE -O3 -arch=sm_75 engine.cu -o engine_gpu
-./engine_gpu
-
-# CPU baseline (for comparison — no CUDA required)
-g++ -O3 engine.cpp -o engine_cpu
-./engine_cpu
-```
-
-`-arch=sm_75` targets a T4 GPU; adjust for your hardware (e.g. `sm_86` for
-Ampere, `sm_90` for Hopper).
-
 ## Benchmarks
 
 Trained a 512→256→64→1 MLP on a synthetic binary classification task across
@@ -91,6 +74,24 @@ Additionally, in cretain situations, comes as close as nearly 40% of PyTorch (eq
 Full methodology, all benchmark graphs, and discussion of limitations
 (including a step-count confound in the loss-vs-batch-size results) are in
 [BENCHMARKS.md](./BENCHMARKS.md).
+
+## Build & run (Google Colab Setup)
+
+Requires the CUDA toolkit (for the GPU version) and a CUDA-capable GPU.
+
+```bash
+# GPU version
+nvcc -DMAIN_ACTIVE -O3 -arch=sm_75 engine.cu -o engine_gpu
+./engine_gpu
+
+# CPU baseline (for comparison — no CUDA required)
+g++ -O3 engine.cpp -o engine_cpu
+./engine_cpu
+```
+
+`-arch=sm_75` targets a T4 GPU; adjust for your hardware (e.g. `sm_86` for
+Ampere, `sm_90` for Hopper).
+
 
 ## Status
 
