@@ -1,0 +1,105 @@
+
+
+import time
+import torch
+import torch.nn as nn
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if device.type != "cuda":
+    print("WARNING: CUDA not available, running on CPU — timings will not be "
+          "comparable to the GPU benchmark.")
+
+TOTAL_SAMPLES = 50_000
+NUM_FEATURES = 512
+NUM_EPOCHS = 10
+LEARNING_RATE = 0.03
+BATCH_SIZES = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 50000]
+
+
+def make_model():
+    # He init to match the CuGrad engine's initialization scheme; matches
+    # architecture (512 -> 256 -> 64 -> 1) and nonlinearity placement.
+    model = nn.Sequential(
+        nn.Linear(NUM_FEATURES, 256),
+        nn.ReLU(),
+        nn.Linear(256, 64),
+        nn.ReLU(),
+        nn.Linear(64, 1),
+    )
+    for layer in model:
+        if isinstance(layer, nn.Linear):
+            nn.init.kaiming_normal_(layer.weight, nonlinearity="relu")
+            nn.init.zeros_(layer.bias)
+    return model.to(device)
+
+
+def make_data(seed=42):
+    g = torch.Generator(device="cpu").manual_seed(seed)
+    xs = (torch.rand(TOTAL_SAMPLES, NUM_FEATURES, generator=g) * 2 - 1)  # U(-1, 1)
+    ys = torch.where(xs[:, 0:1] > 0, 1.0, -1.0)
+    return xs.to(device), ys.to(device)
+
+
+def run_one_batch_size(batch_size, xs, ys):
+    model = make_model()
+    optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE)
+    loss_fn = nn.MSELoss()
+
+    num_batches = TOTAL_SAMPLES // batch_size
+
+    def epoch_pass():
+        total_loss = 0.0
+        for b in range(num_batches):
+            start = b * batch_size
+            end = start + batch_size
+            x_batch = xs[start:end]
+            y_batch = ys[start:end]
+
+            optimizer.zero_grad(set_to_none=True)
+            pred = model(x_batch)
+            loss = loss_fn(pred, y_batch)
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()  # implicit sync, matches loss->data[0] read in C++
+        return total_loss / num_batches
+
+    # --- untimed warm-up: absorbs CUDA context/cuBLAS/autotune cold-start ---
+    epoch_pass()
+
+    # --- timed region ---
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    t0 = time.perf_counter()
+
+    avg_loss = 0.0
+    for epoch in range(NUM_EPOCHS):
+        avg_loss = epoch_pass()
+
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    elapsed = time.perf_counter() - t0
+
+    return elapsed, avg_loss
+
+
+def main():
+    xs, ys = make_data()
+    print(f"{'Batch size':>10} | {'PyTorch time (s)':>17} | {'Final avg loss':>14}")
+    print("-" * 48)
+
+    results = []
+    for batch_size in BATCH_SIZES:
+        elapsed, avg_loss = run_one_batch_size(batch_size, xs, ys)
+        results.append((batch_size, elapsed, avg_loss))
+        print(f"{batch_size:>10} | {elapsed:>17.4f} | {avg_loss:>14.6f}")
+
+    # CSV-friendly dump for pulling straight into the same plotting script
+    # used for the CuGrad benchmarks.
+    print("\nbatch_size,pytorch_time_s,final_loss")
+    for batch_size, elapsed, avg_loss in results:
+        print(f"{batch_size},{elapsed:.6f},{avg_loss:.6f}")
+
+
+if __name__ == "__main__":
+    main()
