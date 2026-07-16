@@ -58,12 +58,14 @@ completes for timing).
 ## Benchmarks
 
 Trained a 512→256→64→1 MLP on a synthetic binary classification task across
-batch sizes from 64 to 50,000. GPU training was 13×–197× faster than the CPU
-baseline depending on batch size (144× at batch size 4096).
+batch sizes from 64 to 50,000 (total sample fixed at 50,000 elements). GPU training was 13×–197× faster than the CPU
+baseline depending on batch size (144× at batch size 4096). Below is GPU speedup over single-threaded CPU baseline naive implementation.
 
 <img width="1200" height="825" alt="4_speedup" src="https://github.com/user-attachments/assets/d8ae2bb4-9e11-456e-8bb9-dd9d78df3e3f" />
 
-Additionally, in cretain situations, comes as close as nearly 40% of PyTorch (equivalent script implemented with PyTorch with identical configuration)
+
+Additionally, in certain situations, comes as close as nearly 40% of PyTorch (equivalent script implemented with PyTorch with identical configuration)
+
 
 <img width="1600" height="1000" alt="Code_Generated_Image(1)" src="https://github.com/user-attachments/assets/365b86c1-c33a-462e-b823-09f2a27a34e4" />
 
