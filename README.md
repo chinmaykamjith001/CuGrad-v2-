@@ -64,7 +64,7 @@ baseline depending on batch size (144× at batch size 4096). Below is GPU speedu
 <img width="1200" height="825" alt="4_speedup" src="https://github.com/user-attachments/assets/d8ae2bb4-9e11-456e-8bb9-dd9d78df3e3f" />
 
 
-Additionally, in certain situations, comes as close as nearly 40% of PyTorch (equivalent script implemented with PyTorch with identical configuration)
+Additionally, in certain situations, comes as close as nearly 30.1% of PyTorch (equivalent script implemented with PyTorch with identical configuration)
 
 
 <img width="1600" height="1000" alt="Code_Generated_Image(1)" src="https://github.com/user-attachments/assets/365b86c1-c33a-462e-b823-09f2a27a34e4" />
