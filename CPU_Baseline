@@ -1,0 +1,239 @@
+%%writefile engine.cpp
+#include <iostream>
+#include <vector>
+#include <memory>
+#include <functional>
+#include <algorithm>
+#include <cmath>
+#include <random>
+#include <chrono>
+
+std::vector<int> calc_strides(const std::vector<int>& shape) {
+    std::vector<int> strides(shape.size(), 1);
+    for (int i = (int)shape.size() - 2; i >= 0; --i) strides[i] = strides[i+1] * shape[i+1];
+    return strides;
+}
+
+class Tensor : public std::enable_shared_from_this<Tensor> {
+public:
+    std::vector<float> data, grad;
+    int total_elements;
+    std::vector<int> shape, strides;
+    std::vector<std::shared_ptr<Tensor>> _prev;
+    std::function<void()> _backward;
+
+    Tensor(const std::vector<float>& input_data, std::vector<int> input_shape, std::vector<std::shared_ptr<Tensor>> children = {}) {
+        shape = input_shape; _prev = children; _backward = [](){}; strides = calc_strides(shape);
+        total_elements = 1; for (int s : shape) total_elements *= s;
+        data = input_data;
+        grad.assign(total_elements, 0.0f);
+    }
+    Tensor(std::vector<int> input_shape, std::vector<std::shared_ptr<Tensor>> children = {}) {
+        shape = input_shape; _prev = children; _backward = [](){}; strides = calc_strides(shape);
+        total_elements = 1; for (int s : shape) total_elements *= s;
+        data.assign(total_elements, 0.0f);
+        grad.assign(total_elements, 0.0f);
+    }
+
+    void backward() {
+        std::vector<std::shared_ptr<Tensor>> topo, visited;
+        std::function<void(std::shared_ptr<Tensor>)> build_topo = [&](std::shared_ptr<Tensor> v) {
+            for (auto& x : visited) if (x.get() == v.get()) return;
+            visited.push_back(v);
+            for (auto& c : v->_prev) build_topo(c);
+            topo.push_back(v);
+        };
+        build_topo(shared_from_this());
+        std::fill(grad.begin(), grad.end(), 1.0f);
+        for (auto it = topo.rbegin(); it != topo.rend(); ++it) (*it)->_backward();
+    }
+};
+
+std::shared_ptr<Tensor> mean(std::shared_ptr<Tensor> self) {
+    float total = 0;
+    for (int i = 0; i < self->total_elements; i++) total += self->data[i];
+    float m = total / self->total_elements;
+    auto out = std::make_shared<Tensor>(std::vector<float>{m}, std::vector<int>{1}, std::vector<std::shared_ptr<Tensor>>{self});
+    Tensor* out_ptr = out.get();
+    out->_backward = [self, out_ptr]() {
+        float scale = 1.0f / self->total_elements;
+        for (int i = 0; i < self->total_elements; i++) self->grad[i] += scale * out_ptr->grad[0];
+    };
+    return out;
+}
+
+std::shared_ptr<Tensor> operator-(std::shared_ptr<Tensor> A, std::shared_ptr<Tensor> B) {
+    auto out = std::make_shared<Tensor>(A->shape, std::vector<std::shared_ptr<Tensor>>{A, B});
+    int n = out->total_elements;
+    for (int i = 0; i < n; i++) out->data[i] = A->data[i] - B->data[i];
+    Tensor* op = out.get();
+    out->_backward = [A, B, op, n]() {
+        for (int i = 0; i < n; i++) { A->grad[i] += op->grad[i]; B->grad[i] += -op->grad[i]; }
+    };
+    return out;
+}
+
+std::shared_ptr<Tensor> operator*(std::shared_ptr<Tensor> A, std::shared_ptr<Tensor> B) {
+    auto out = std::make_shared<Tensor>(A->shape, std::vector<std::shared_ptr<Tensor>>{A, B});
+    int n = out->total_elements;
+    for (int i = 0; i < n; i++) out->data[i] = A->data[i] * B->data[i];
+    Tensor* op = out.get();
+    out->_backward = [A, B, op, n]() {
+        for (int i = 0; i < n; i++) { A->grad[i] += op->grad[i] * B->data[i]; B->grad[i] += op->grad[i] * A->data[i]; }
+    };
+    return out;
+}
+
+std::shared_ptr<Tensor> operator+(std::shared_ptr<Tensor> A, std::shared_ptr<Tensor> B) {
+    int max_rows = std::max(A->shape[0], B->shape[0]);
+    int max_cols = A->shape[1];
+    auto out = std::make_shared<Tensor>(std::vector<int>{max_rows, max_cols}, std::vector<std::shared_ptr<Tensor>>{A, B});
+    int a_rows = A->shape[0], b_rows = B->shape[0], a_cols = A->shape[1], b_cols = B->shape[1];
+    for (int r = 0; r < max_rows; r++) {
+        int rA = (a_rows == 1) ? 0 : r;
+        int rB = (b_rows == 1) ? 0 : r;
+        for (int c = 0; c < max_cols; c++) {
+            out->data[r * max_cols + c] = A->data[rA * a_cols + c] + B->data[rB * b_cols + c];
+        }
+    }
+    Tensor* op = out.get();
+    out->_backward = [A, B, op, a_rows, b_rows, a_cols, b_cols, max_rows, max_cols]() {
+        for (int r = 0; r < max_rows; r++) {
+            int rA = (a_rows == 1) ? 0 : r;
+            int rB = (b_rows == 1) ? 0 : r;
+            for (int c = 0; c < max_cols; c++) {
+                float g = op->grad[r * max_cols + c];
+                A->grad[rA * a_cols + c] += g;
+                B->grad[rB * b_cols + c] += g;
+            }
+        }
+    };
+    return out;
+}
+
+std::shared_ptr<Tensor> matmul(std::shared_ptr<Tensor> A, std::shared_ptr<Tensor> B) {
+    int M = A->shape[0], K = A->shape[1], N = B->shape[1];
+    auto out = std::make_shared<Tensor>(std::vector<int>{M, N}, std::vector<std::shared_ptr<Tensor>>{A, B});
+    for (int i = 0; i < M; i++)
+        for (int j = 0; j < N; j++) {
+            float s = 0.0f;
+            for (int k = 0; k < K; k++) s += A->data[i * K + k] * B->data[k * N + j];
+            out->data[i * N + j] = s;
+        }
+    Tensor* op = out.get();
+    out->_backward = [A, B, op, M, N, K]() {
+        for (int i = 0; i < M; i++)
+            for (int k = 0; k < K; k++) {
+                float s = 0.0f;
+                for (int j = 0; j < N; j++) s += op->grad[i * N + j] * B->data[k * N + j];
+                A->grad[i * K + k] += s;
+            }
+        for (int k = 0; k < K; k++)
+            for (int j = 0; j < N; j++) {
+                float s = 0.0f;
+                for (int i = 0; i < M; i++) s += A->data[i * K + k] * op->grad[i * N + j];
+                B->grad[k * N + j] += s;
+            }
+    };
+    return out;
+}
+
+std::shared_ptr<Tensor> relu(std::shared_ptr<Tensor> A) {
+    auto out = std::make_shared<Tensor>(A->shape, std::vector<std::shared_ptr<Tensor>>{A});
+    int n = out->total_elements;
+    for (int i = 0; i < n; i++) out->data[i] = (A->data[i] > 0) ? A->data[i] : 0.0f;
+    Tensor* op = out.get();
+    out->_backward = [A, op, n]() {
+        for (int i = 0; i < n; i++) A->grad[i] += (A->data[i] > 0 ? 1.0f : 0.0f) * op->grad[i];
+    };
+    return out;
+}
+
+class Layer {
+public:
+    std::shared_ptr<Tensor> w, b;
+    bool nonlin;
+    Layer(int nin, int nout, bool nl = true) {
+        nonlin = nl;
+        static std::default_random_engine gen(15);
+        float stddev = sqrtf(2.0f / (float)nin);
+        std::normal_distribution<float> dist(0.0f, stddev);
+        std::vector<float> wd(nin * nout);
+        for (auto& d : wd) d = dist(gen);
+        w = std::make_shared<Tensor>(wd, std::vector<int>{nin, nout});
+        std::vector<float> bd(nout, 0.0f);
+        b = std::make_shared<Tensor>(bd, std::vector<int>{1, nout});
+    }
+    std::shared_ptr<Tensor> operator()(std::shared_ptr<Tensor> x) {
+        auto o = operator+(matmul(x, w), b);
+        return nonlin ? relu(o) : o;
+    }
+    std::vector<std::shared_ptr<Tensor>> parameters() { return {w, b}; }
+};
+
+class MLP {
+public:
+    std::vector<Layer> layers;
+    MLP(int nin, std::vector<int> nout) {
+        std::vector<int> hold = {nin};
+        hold.insert(hold.end(), nout.begin(), nout.end());
+        for (size_t i = 0; i < nout.size(); ++i) layers.emplace_back(hold[i], hold[i+1], i != nout.size() - 1);
+    }
+    std::shared_ptr<Tensor> operator()(std::shared_ptr<Tensor> x) {
+        for (auto& l : layers) x = l(x);
+        return x;
+    }
+    std::vector<std::shared_ptr<Tensor>> parameters() {
+        std::vector<std::shared_ptr<Tensor>> p;
+        for (auto& l : layers) { auto lp = l.parameters(); p.insert(p.end(), lp.begin(), lp.end()); }
+        return p;
+    }
+};
+
+std::shared_ptr<Tensor> get_batch(const std::vector<float>& full_data, int batch_idx, int batch_size, int num_features) {
+    int start_idx = batch_idx * batch_size * num_features;
+    int end_idx = start_idx + (batch_size * num_features);
+    std::vector<float> batch_data(full_data.begin() + start_idx, full_data.begin() + end_idx);
+    std::vector<int> shape = {batch_size, num_features};
+    return std::make_shared<Tensor>(batch_data, shape);
+}
+
+void sgd_update(std::shared_ptr<Tensor> p, float lr) {
+    for (int i = 0; i < p->total_elements; i++) p->data[i] -= lr * p->grad[i];
+}
+
+int main() {
+    int total_samples = 50000;
+    int batch_size = 4096;
+    int num_features = 512;
+    std::vector<float> xs_data(total_samples * num_features);
+    std::mt19937 gen(42);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    for (int i = 0; i < total_samples * num_features; ++i) xs_data[i] = dist(gen);
+    std::vector<float> ys_data(total_samples);
+    for (int i = 0; i < total_samples; ++i) ys_data[i] = (xs_data[i * num_features] > 0.0f) ? 1.0f : -1.0f;
+    MLP model(num_features, {256, 64, 1});
+    float learning_rate = 0.03f;
+    int num_epochs = 10;
+    auto start = std::chrono::high_resolution_clock::now();
+    for (int k = 0; k < num_epochs; ++k) {
+        float epoch_loss = 0.0f;
+        int batches = total_samples / batch_size;
+        for (int b = 0; b < batches; ++b) {
+            auto x_batch = get_batch(xs_data, b, batch_size, num_features);
+            auto y_batch = get_batch(ys_data, b, batch_size, 1);
+            auto ypred = model(x_batch);
+            auto diff = operator-(ypred, y_batch);
+            auto loss = mean(operator*(diff, diff));
+            epoch_loss += loss->data[0];
+            for (auto p : model.parameters()) std::fill(p->grad.begin(), p->grad.end(), 0.0f);
+            loss->backward();
+            for (auto p : model.parameters()) sgd_update(p, learning_rate);
+        }
+        if (k % 2 == 0 || k == num_epochs - 1) std::cout << "Epoch " << k << " | Loss: " << (epoch_loss / batches) << std::endl;
+    }
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<float> elapsed = end - start;
+    std::cout << "Elapsed time: " << elapsed.count() << " seconds." << std::endl;
+    return 0;
+}
