@@ -1,6 +1,6 @@
 # CuGrad
 
-A C++/CUDA deep learning engine built from scratch — automatic differentiation,
+A C++/CUDA deep learning engine built from scratch: automatic differentiation,
 GPU tensor operations, and multilayer perceptrons, with no external ML
 libraries. Every operator, from tensor broadcasting to SGD, is backed by a
 hand-written CUDA kernel.
